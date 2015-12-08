@@ -1,4 +1,4 @@
-/* 
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -31,7 +31,6 @@ import java.util.Map;
 import org.apache.parquet.Log;
 import org.apache.parquet.column.ColumnWriteStore;
 import org.apache.parquet.column.ParquetProperties;
-import org.apache.parquet.column.ParquetProperties.WriterVersion;
 import org.apache.parquet.hadoop.CodecFactory.BytesCompressor;
 import org.apache.parquet.hadoop.api.WriteSupport;
 import org.apache.parquet.hadoop.api.WriteSupport.FinalizedWriteContext;
@@ -53,10 +52,9 @@ class InternalParquetRecordWriter<T> {
   private final long rowGroupSize;
   private long rowGroupSizeThreshold;
   private long nextRowGroupSize;
-  private final int pageSize;
   private final BytesCompressor compressor;
   private final boolean validating;
-  private final ParquetProperties parquetProperties;
+  private final ParquetProperties props;
 
   private long recordCount = 0;
   private long recordCountForNextMemCheck = MINIMUM_RECORD_COUNT_FOR_CHECK;
@@ -65,7 +63,6 @@ class InternalParquetRecordWriter<T> {
   private ColumnWriteStore columnStore;
   private ColumnChunkPageWriteStore pageStore;
   private RecordConsumer recordConsumer;
-
 
   /**
    * @param parquetFileWriter the file to write to
@@ -81,12 +78,9 @@ class InternalParquetRecordWriter<T> {
       MessageType schema,
       Map<String, String> extraMetaData,
       long rowGroupSize,
-      int pageSize,
       BytesCompressor compressor,
-      int dictionaryPageSize,
-      boolean enableDictionary,
       boolean validating,
-      WriterVersion writerVersion) {
+      ParquetProperties props) {
     this.parquetFileWriter = parquetFileWriter;
     this.writeSupport = checkNotNull(writeSupport, "writeSupport");
     this.schema = schema;
@@ -94,19 +88,15 @@ class InternalParquetRecordWriter<T> {
     this.rowGroupSize = rowGroupSize;
     this.rowGroupSizeThreshold = rowGroupSize;
     this.nextRowGroupSize = rowGroupSizeThreshold;
-    this.pageSize = pageSize;
     this.compressor = compressor;
     this.validating = validating;
-    this.parquetProperties = new ParquetProperties(dictionaryPageSize, writerVersion, enableDictionary);
+    this.props = props;
     initStore();
   }
 
   private void initStore() {
-    pageStore = new ColumnChunkPageWriteStore(compressor, schema, pageSize);
-    columnStore = parquetProperties.newColumnWriteStore(
-        schema,
-        pageStore,
-        pageSize);
+    pageStore = new ColumnChunkPageWriteStore(compressor, schema);
+    columnStore = props.newColumnWriteStore(schema, pageStore);
     MessageColumnIO columnIO = new ColumnIOFactory(validating).getColumnIO(schema);
     this.recordConsumer = columnIO.getRecordWriter(columnStore);
     writeSupport.prepareForWrite(recordConsumer);
@@ -154,7 +144,9 @@ class InternalParquetRecordWriter<T> {
             max(MINIMUM_RECORD_COUNT_FOR_CHECK, (recordCount + (long)(nextRowGroupSize / ((float)recordSize))) / 2), // will check halfway
             recordCount + MAXIMUM_RECORD_COUNT_FOR_CHECK // will not look more than max records ahead
             );
-        if (DEBUG) LOG.debug(format("Checked mem at %,d will check again at: %,d ", recordCount, recordCountForNextMemCheck));
+        if (DEBUG) {
+          LOG.debug(format("Checked mem at %,d will check again at: %,d ", recordCount, recordCountForNextMemCheck));
+        }
       }
     }
   }
