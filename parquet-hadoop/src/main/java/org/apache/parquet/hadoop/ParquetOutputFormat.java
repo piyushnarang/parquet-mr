@@ -323,9 +323,7 @@ public class ParquetOutputFormat<T> extends FileOutputFormat<Void, T> {
 
   /**
    * constructor used when this OutputFormat in wrapped in another one (In Pig for example)
-   * @param writeSupportClass the class used to convert the incoming records
-   * @param schema the schema of the records
-   * @param extraMetaData extra meta data to be stored in the footer of the file
+   * @param writeSupport the class used to convert the incoming records
    */
   public <S extends WriteSupport<T>> ParquetOutputFormat(S writeSupport) {
     this.writeSupport = writeSupport;
@@ -372,7 +370,6 @@ public class ParquetOutputFormat<T> extends FileOutputFormat<Void, T> {
         .withMaxRowCountForPageSizeCheck(getMaxRowCountForPageSizeCheck(conf))
         .build();
 
-    CodecFactory codecFactory = new CodecFactory(conf);
     long blockSize = getLongBlockSize(conf);
     int maxPaddingSize = getMaxPaddingSize(conf);
     boolean validating = getValidation(conf);
@@ -410,10 +407,11 @@ public class ParquetOutputFormat<T> extends FileOutputFormat<Void, T> {
         init.getSchema(),
         init.getExtraMetaData(),
         blockSize,
-        codecFactory.getCompressor(codec, props.getPageSizeThreshold()),
+        codec,
         validating,
         props,
-        memoryManager);
+        memoryManager,
+        conf);
   }
 
   /**

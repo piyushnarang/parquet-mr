@@ -52,6 +52,7 @@ public class ParquetWriter<T> implements Closeable {
   public static final int MAX_PADDING_SIZE_DEFAULT = 0;
 
   private final InternalParquetRecordWriter<T> writer;
+  private final CodecFactory codecFactory;
 
   /**
    * Create a new ParquetWriter.
@@ -300,6 +301,9 @@ public class ParquetWriter<T> implements Closeable {
       writer.close();
     } catch (InterruptedException e) {
       throw new IOException(e);
+    } finally {
+      // release after the writer closes in case it is used for a last flush
+      codecFactory.release();
     }
   }
 
