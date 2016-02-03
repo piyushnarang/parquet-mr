@@ -18,6 +18,11 @@
  */
 package org.apache.parquet.io.api;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
@@ -27,6 +32,7 @@ import org.junit.Test;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 public class TestBinary {
 
@@ -143,6 +149,29 @@ public class TestBinary {
   }
 
   @Test
+  public void testEqualityMethods() throws Exception {
+    Binary bin1 = Binary.fromConstantByteArray("alice".getBytes(), 1, 3);
+    Binary bin2 = Binary.fromConstantByteBuffer(ByteBuffer.wrap("alice".getBytes(), 1, 3));
+    assertEquals(bin1, bin2);
+  }
+
+  @Test
+  public void testWriteAllTo() throws Exception {
+    byte[] orig = {10, 9 ,8, 7, 6, 5, 4, 3, 2, 1};
+    testWriteAllToHelper(Binary.fromConstantByteBuffer(ByteBuffer.wrap(orig)), orig);
+    ByteBuffer buf = ByteBuffer.allocateDirect(orig.length);
+    buf.put(orig);
+    buf.flip();
+    testWriteAllToHelper(Binary.fromConstantByteBuffer(buf), orig);
+  }
+
+  private void testWriteAllToHelper(Binary binary, byte[] orig) throws IOException {
+    ByteArrayOutputStream out = new ByteArrayOutputStream(orig.length);
+    binary.writeTo(out);
+    assertArrayEquals(orig, out.toByteArray());
+  }
+
+  @Test
   public void testFromStringBinary() throws Exception {
     testBinary(STRING_BF, false);
   }
@@ -202,6 +231,22 @@ public class TestBinary {
     assertArrayEquals(testString.getBytes(UTF8), copy.copy().getBytes());
   }
 
+  private void testSerializable(BinaryFactory bf, boolean reused) throws Exception {
+    BinaryAndOriginal bao = bf.get("polygon".getBytes(UTF8), reused);
+
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    ObjectOutputStream out = new ObjectOutputStream(baos);
+    out.writeObject(bao.binary);
+    out.close();
+    baos.close();
+
+    ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(
+        baos.toByteArray()));
+    Object object = in.readObject();
+    assertTrue(object instanceof Binary);
+    assertEquals(bao.binary, object);
+  }
+
   private void testBinary(BinaryFactory bf, boolean reused) throws Exception {
     testSlice(bf, reused);
 
@@ -211,5 +256,6 @@ public class TestBinary {
       testConstantCopy(bf);
     }
 
+    testSerializable(bf, reused);
   }
 }
