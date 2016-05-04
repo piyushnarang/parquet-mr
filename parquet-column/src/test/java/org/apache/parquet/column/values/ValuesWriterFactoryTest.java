@@ -18,7 +18,11 @@
  */
 package org.apache.parquet.column.values;
 
+import java.util.HashMap;
+import java.util.List;
+
 import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.column.Encoding;
 import org.apache.parquet.column.ParquetProperties;
 import org.apache.parquet.column.ParquetProperties.WriterVersion;
 import org.apache.parquet.column.values.delta.DeltaBinaryPackingValuesWriter;
@@ -39,6 +43,10 @@ import static junit.framework.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+/**
+ * Tests few configurations to test creation of values writers based on type, Parquet writer versions
+ * and dictionary encoding = true / false.
+ */
 public class ValuesWriterFactoryTest {
 
   @Test
@@ -325,11 +333,19 @@ public class ValuesWriterFactoryTest {
   }
 
   private ValuesWriterFactory getFactory(WriterVersion writerVersion, boolean enableDictionary) {
-    return new ValuesWriterFactory(writerVersion, 128, ParquetProperties.DEFAULT_PAGE_SIZE, null, 0, enableDictionary);
+    return new ValuesWriterFactory(
+      writerVersion,
+      128,
+      ParquetProperties.DEFAULT_PAGE_SIZE,
+      null,
+      0,
+      enableDictionary,
+      new HashMap<PrimitiveTypeName, List<Encoding>>());
   }
 
   private void validateWriterType(ValuesWriter writer, Class<? extends ValuesWriter> valuesWriterClass) {
-    assertTrue("Not instance of: " + valuesWriterClass.getName(), valuesWriterClass.isInstance(writer));
+    assertTrue("Not instance of: " + valuesWriterClass.getName() + " is: " + writer.getClass(),
+               valuesWriterClass.isInstance(writer));
   }
 
   private void validateFallbackWriter(ValuesWriter writer, Class<? extends ValuesWriter> initialWriterClass, Class<? extends ValuesWriter> fallbackWriterClass) {

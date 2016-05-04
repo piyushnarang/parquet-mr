@@ -18,6 +18,10 @@
  */
 package org.apache.parquet.column.values;
 
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
 import org.apache.parquet.bytes.ByteBufferAllocator;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.Encoding;
@@ -31,10 +35,12 @@ import org.apache.parquet.column.values.plain.BooleanPlainValuesWriter;
 import org.apache.parquet.column.values.plain.FixedLenByteArrayPlainValuesWriter;
 import org.apache.parquet.column.values.plain.PlainValuesWriter;
 import org.apache.parquet.column.values.rle.RunLengthBitPackingHybridValuesWriter;
+import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 
 import static org.apache.parquet.column.Encoding.PLAIN;
 import static org.apache.parquet.column.Encoding.PLAIN_DICTIONARY;
 import static org.apache.parquet.column.Encoding.RLE_DICTIONARY;
+import static org.apache.parquet.column.Encoding.GetValuesWriterParams;
 
 public class ValuesWriterFactory {
 
@@ -45,22 +51,29 @@ public class ValuesWriterFactory {
   private final int pageSizeThreshold;
   private final ByteBufferAllocator allocator;
   private final int dictionaryPageSizeThreshold;
+  private final Map<PrimitiveTypeName, List<Encoding>> encodingOverrides;
 
   public ValuesWriterFactory(WriterVersion writerVersion, int initialSlabSize, int pageSizeThreshold,
                              ByteBufferAllocator allocator, int dictionaryPageSizeThreshold,
-                             boolean enableDictionary) {
+                             boolean enableDictionary,
+                             Map<PrimitiveTypeName, List<Encoding>> encodingOverrides) {
     this.writerVersion = writerVersion;
     this.initialSlabSize = initialSlabSize;
     this.pageSizeThreshold = pageSizeThreshold;
     this.allocator = allocator;
     this.dictionaryPageSizeThreshold = dictionaryPageSizeThreshold;
     this.enableDictionary = enableDictionary;
+    this.encodingOverrides = encodingOverrides;
   }
 
   public ValuesWriter newValuesWriter(ColumnDescriptor path) {
+    if ( isTypeEncodingOverridden(path) ) {
+      return getOverriddenValuesWriter(path, getBitWidth(path));
+    }
+
     switch (path.getType()) {
       case BOOLEAN:
-        return getBooleanValuesWriter();
+        return getBooleanValuesWriter(path);
       case FIXED_LEN_BYTE_ARRAY:
         return getFixedLenByteArrayValuesWriter(path);
       case BINARY:
@@ -80,9 +93,67 @@ public class ValuesWriterFactory {
     }
   }
 
-  private ValuesWriter getBooleanValuesWriter() {
+  /**
+   * Returns true if there are encoding overrides specified for the type.
+   */
+  private boolean isTypeEncodingOverridden(ColumnDescriptor path) {
+    List<Encoding> overrides = encodingOverrides.get(path.getType());
+    return ( overrides != null && ! (overrides.isEmpty()) );
+  }
+
+  /**
+   * Return the bit width to use for choosing encoding override value writer.
+   * For some of the types, the bit width isn't used to create value writers so
+   * we default to 0 for them.
+   */
+  private int getBitWidth(ColumnDescriptor path) {
+    switch (path.getType()) {
+      case BOOLEAN:
+        return 1;
+      case FIXED_LEN_BYTE_ARRAY:
+        return path.getTypeLength();
+      case INT96:
+        return 12;
+      default:
+        return 0;
+    }
+  }
+
+  private ValuesWriter getOverriddenValuesWriter(ColumnDescriptor path, int bitWidth) {
+    List<Encoding> overrides = encodingOverrides.get(path.getType());
+
+    Iterator<Encoding> encodingIterator = overrides.iterator();
+    Encoding firstEnc = encodingIterator.next();
+
+    GetValuesWriterParams firstEncParams =
+      new GetValuesWriterParams(path, writerVersion, bitWidth, initialSlabSize, pageSizeThreshold, allocator, dictionaryPageSizeThreshold);
+    ValuesWriter firstWriter = firstEnc.getValuesWriter(firstEncParams);
+
+    if (encodingIterator.hasNext()) {
+      Encoding secondEnc = encodingIterator.next();
+      GetValuesWriterParams secondEncParams =
+        new GetValuesWriterParams(path, writerVersion, bitWidth, initialSlabSize, pageSizeThreshold, allocator, dictionaryPageSizeThreshold);
+      ValuesWriter secondWriter = secondEnc.getValuesWriter(secondEncParams);
+
+      return getFallbackValuesWriter(firstWriter, secondWriter);
+    } else {
+      return firstWriter;
+    }
+  }
+
+  private <I extends ValuesWriter & RequiresFallback> ValuesWriter getFallbackValuesWriter(ValuesWriter initialWriter, ValuesWriter fallbackWriter) {
+    if ( ! (initialWriter instanceof RequiresFallback) ) {
+      throw new IllegalArgumentException("Initial writer must be subType of RequiresFallback. It is: " + initialWriter.getClass());
+    }
+
+    return FallbackValuesWriter.of(
+      (I)initialWriter,
+      fallbackWriter);
+  }
+
+  private ValuesWriter getBooleanValuesWriter(ColumnDescriptor path) {
     // no dictionary encoding for boolean
-    if(writerVersion == WriterVersion.PARQUET_1_0) {
+    if (writerVersion == WriterVersion.PARQUET_1_0) {
       return new BooleanPlainValuesWriter();
     } else {
       return new RunLengthBitPackingHybridValuesWriter(1, initialSlabSize, pageSizeThreshold, allocator);
@@ -100,7 +171,7 @@ public class ValuesWriterFactory {
   }
 
   private ValuesWriter getBinaryValuesWriter(ColumnDescriptor path) {
-    if(writerVersion == WriterVersion.PARQUET_1_0) {
+    if (writerVersion == WriterVersion.PARQUET_1_0) {
       ValuesWriter fallbackWriter = new PlainValuesWriter(initialSlabSize, pageSizeThreshold, allocator);
       return dictWriterWithFallBack(path, fallbackWriter);
     } else {
@@ -110,7 +181,7 @@ public class ValuesWriterFactory {
   }
 
   private ValuesWriter getInt32ValuesWriter(ColumnDescriptor path) {
-    if(writerVersion == WriterVersion.PARQUET_1_0) {
+    if (writerVersion == WriterVersion.PARQUET_1_0) {
       ValuesWriter fallbackWriter = new PlainValuesWriter(initialSlabSize, pageSizeThreshold, allocator);
       return dictWriterWithFallBack(path, fallbackWriter);
     } else {
@@ -120,7 +191,7 @@ public class ValuesWriterFactory {
   }
 
   private ValuesWriter getInt64ValuesWriter(ColumnDescriptor path) {
-    if(writerVersion == WriterVersion.PARQUET_1_0) {
+    if (writerVersion == WriterVersion.PARQUET_1_0) {
       ValuesWriter fallbackWriter = new PlainValuesWriter(initialSlabSize, pageSizeThreshold, allocator);
       return dictWriterWithFallBack(path, fallbackWriter);
     } else {
@@ -131,29 +202,17 @@ public class ValuesWriterFactory {
 
   private ValuesWriter getInt96ValuesWriter(ColumnDescriptor path) {
     ValuesWriter fallbackWriter = new FixedLenByteArrayPlainValuesWriter(12, initialSlabSize, pageSizeThreshold, allocator);
-    if(writerVersion == WriterVersion.PARQUET_1_0) {
-      return dictWriterWithFallBack(path, fallbackWriter);
-    } else {
-      return dictWriterWithFallBack(path, fallbackWriter);
-    }
+    return dictWriterWithFallBack(path, fallbackWriter);
   }
 
   private ValuesWriter getDoubleValuesWriter(ColumnDescriptor path) {
     ValuesWriter fallbackWriter = new PlainValuesWriter(initialSlabSize, pageSizeThreshold, allocator);
-    if(writerVersion == WriterVersion.PARQUET_1_0) {
-      return dictWriterWithFallBack(path, fallbackWriter);
-    } else {
-      return dictWriterWithFallBack(path, fallbackWriter);
-    }
+    return dictWriterWithFallBack(path, fallbackWriter);
   }
 
   private ValuesWriter getFloatValuesWriter(ColumnDescriptor path) {
     ValuesWriter fallbackWriter = new PlainValuesWriter(initialSlabSize, pageSizeThreshold, allocator);
-    if(writerVersion == WriterVersion.PARQUET_1_0) {
-      return dictWriterWithFallBack(path, fallbackWriter);
-    } else {
-      return dictWriterWithFallBack(path, fallbackWriter);
-    }
+    return dictWriterWithFallBack(path, fallbackWriter);
   }
 
   @SuppressWarnings("deprecation")
@@ -176,19 +235,19 @@ public class ValuesWriterFactory {
       case BOOLEAN:
         throw new IllegalArgumentException("no dictionary encoding for BOOLEAN");
       case BINARY:
-        return new DictionaryValuesWriter.PlainBinaryDictionaryValuesWriter(dictionaryPageSizeThreshold, encodingForDataPage, encodingForDictionaryPage, this.allocator);
+        return new DictionaryValuesWriter.PlainBinaryDictionaryValuesWriter(dictionaryPageSizeThreshold, encodingForDataPage, encodingForDictionaryPage, allocator);
       case INT32:
-        return new DictionaryValuesWriter.PlainIntegerDictionaryValuesWriter(dictionaryPageSizeThreshold, encodingForDataPage, encodingForDictionaryPage, this.allocator);
+        return new DictionaryValuesWriter.PlainIntegerDictionaryValuesWriter(dictionaryPageSizeThreshold, encodingForDataPage, encodingForDictionaryPage, allocator);
       case INT64:
-        return new DictionaryValuesWriter.PlainLongDictionaryValuesWriter(dictionaryPageSizeThreshold, encodingForDataPage, encodingForDictionaryPage, this.allocator);
+        return new DictionaryValuesWriter.PlainLongDictionaryValuesWriter(dictionaryPageSizeThreshold, encodingForDataPage, encodingForDictionaryPage, allocator);
       case INT96:
-        return new DictionaryValuesWriter.PlainFixedLenArrayDictionaryValuesWriter(dictionaryPageSizeThreshold, 12, encodingForDataPage, encodingForDictionaryPage, this.allocator);
+        return new DictionaryValuesWriter.PlainFixedLenArrayDictionaryValuesWriter(dictionaryPageSizeThreshold, 12, encodingForDataPage, encodingForDictionaryPage, allocator);
       case DOUBLE:
-        return new DictionaryValuesWriter.PlainDoubleDictionaryValuesWriter(dictionaryPageSizeThreshold, encodingForDataPage, encodingForDictionaryPage, this.allocator);
+        return new DictionaryValuesWriter.PlainDoubleDictionaryValuesWriter(dictionaryPageSizeThreshold, encodingForDataPage, encodingForDictionaryPage, allocator);
       case FLOAT:
-        return new DictionaryValuesWriter.PlainFloatDictionaryValuesWriter(dictionaryPageSizeThreshold, encodingForDataPage, encodingForDictionaryPage, this.allocator);
+        return new DictionaryValuesWriter.PlainFloatDictionaryValuesWriter(dictionaryPageSizeThreshold, encodingForDataPage, encodingForDictionaryPage, allocator);
       case FIXED_LEN_BYTE_ARRAY:
-        return new DictionaryValuesWriter.PlainFixedLenArrayDictionaryValuesWriter(dictionaryPageSizeThreshold, path.getTypeLength(), encodingForDataPage, encodingForDictionaryPage, this.allocator);
+        return new DictionaryValuesWriter.PlainFixedLenArrayDictionaryValuesWriter(dictionaryPageSizeThreshold, path.getTypeLength(), encodingForDataPage, encodingForDictionaryPage, allocator);
       default:
         throw new IllegalArgumentException("Unknown type " + path.getType());
     }

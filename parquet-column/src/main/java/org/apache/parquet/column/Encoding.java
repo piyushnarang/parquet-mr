@@ -27,29 +27,48 @@ import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BOOLEAN;
 
 import java.io.IOException;
 
+import org.apache.parquet.bytes.ByteBufferAllocator;
 import org.apache.parquet.bytes.BytesUtils;
+import org.apache.parquet.column.ParquetProperties.WriterVersion;
 import org.apache.parquet.column.page.DictionaryPage;
 import org.apache.parquet.column.values.ValuesReader;
+import org.apache.parquet.column.values.ValuesWriter;
 import org.apache.parquet.column.values.bitpacking.ByteBitPackingValuesReader;
+import org.apache.parquet.column.values.bitpacking.ByteBitPackingValuesWriter;
 import org.apache.parquet.column.values.boundedint.ZeroIntegerValuesReader;
 import org.apache.parquet.column.values.delta.DeltaBinaryPackingValuesReader;
+import org.apache.parquet.column.values.delta.DeltaBinaryPackingValuesWriterForInteger;
+import org.apache.parquet.column.values.delta.DeltaBinaryPackingValuesWriterForLong;
 import org.apache.parquet.column.values.deltalengthbytearray.DeltaLengthByteArrayValuesReader;
+import org.apache.parquet.column.values.deltalengthbytearray.DeltaLengthByteArrayValuesWriter;
 import org.apache.parquet.column.values.deltastrings.DeltaByteArrayReader;
+import org.apache.parquet.column.values.deltastrings.DeltaByteArrayWriter;
 import org.apache.parquet.column.values.dictionary.DictionaryValuesReader;
+import org.apache.parquet.column.values.dictionary.DictionaryValuesWriter.PlainBinaryDictionaryValuesWriter;
+import org.apache.parquet.column.values.dictionary.DictionaryValuesWriter.PlainIntegerDictionaryValuesWriter;
+import org.apache.parquet.column.values.dictionary.DictionaryValuesWriter.PlainLongDictionaryValuesWriter;
+import org.apache.parquet.column.values.dictionary.DictionaryValuesWriter.PlainFixedLenArrayDictionaryValuesWriter;
+import org.apache.parquet.column.values.dictionary.DictionaryValuesWriter.PlainDoubleDictionaryValuesWriter;
+import org.apache.parquet.column.values.dictionary.DictionaryValuesWriter.PlainFloatDictionaryValuesWriter;
 import org.apache.parquet.column.values.dictionary.PlainValuesDictionary.PlainBinaryDictionary;
 import org.apache.parquet.column.values.dictionary.PlainValuesDictionary.PlainDoubleDictionary;
 import org.apache.parquet.column.values.dictionary.PlainValuesDictionary.PlainFloatDictionary;
 import org.apache.parquet.column.values.dictionary.PlainValuesDictionary.PlainIntegerDictionary;
 import org.apache.parquet.column.values.dictionary.PlainValuesDictionary.PlainLongDictionary;
 import org.apache.parquet.column.values.plain.BinaryPlainValuesReader;
+import org.apache.parquet.column.values.plain.BooleanPlainValuesWriter;
 import org.apache.parquet.column.values.plain.FixedLenByteArrayPlainValuesReader;
 import org.apache.parquet.column.values.plain.BooleanPlainValuesReader;
+import org.apache.parquet.column.values.plain.FixedLenByteArrayPlainValuesWriter;
 import org.apache.parquet.column.values.plain.PlainValuesReader.DoublePlainValuesReader;
 import org.apache.parquet.column.values.plain.PlainValuesReader.FloatPlainValuesReader;
 import org.apache.parquet.column.values.plain.PlainValuesReader.IntegerPlainValuesReader;
 import org.apache.parquet.column.values.plain.PlainValuesReader.LongPlainValuesReader;
+import org.apache.parquet.column.values.plain.PlainValuesWriter;
 import org.apache.parquet.column.values.rle.RunLengthBitPackingHybridValuesReader;
+import org.apache.parquet.column.values.rle.RunLengthBitPackingHybridValuesWriter;
 import org.apache.parquet.io.ParquetDecodingException;
+import org.apache.parquet.io.ParquetEncodingException;
 
 /**
  * encoding of the data
@@ -85,6 +104,28 @@ public enum Encoding {
     }
 
     @Override
+    public ValuesWriter getValuesWriter(GetValuesWriterParams params) {
+      validateWriterVersion(params.getWriterVersion());
+
+      switch (params.getDescriptor().getType()) {
+        case BOOLEAN:
+          return new BooleanPlainValuesWriter();
+        case BINARY:
+        case FLOAT:
+        case DOUBLE:
+        case INT32:
+        case INT64:
+          return new PlainValuesWriter(params.getInitialCapacity(), params.getPageSize(), params.getAllocator());
+        case INT96:
+          return new FixedLenByteArrayPlainValuesWriter(params.getBitWidth(), params.getInitialCapacity(), params.getPageSize(), params.getAllocator());
+        case FIXED_LEN_BYTE_ARRAY:
+          return new FixedLenByteArrayPlainValuesWriter(params.getBitWidth(), params.getInitialCapacity(), params.getPageSize(), params.getAllocator());
+        default:
+          throw new ParquetDecodingException("no plain writer for type " + params.getDescriptor().getType());
+      }
+    }
+
+    @Override
     public Dictionary initDictionary(ColumnDescriptor descriptor, DictionaryPage dictionaryPage) throws IOException {
       switch (descriptor.getType()) {
       case BINARY:
@@ -104,8 +145,8 @@ public enum Encoding {
       default:
         throw new ParquetDecodingException("Dictionary encoding not supported for type: " + descriptor.getType());
       }
-
     }
+
   },
 
   /**
@@ -121,6 +162,19 @@ public enum Encoding {
       }
       return new RunLengthBitPackingHybridValuesReader(bitWidth);
     }
+
+    @Override
+    public ValuesWriter getValuesWriter(GetValuesWriterParams params) {
+      validateWriterVersion(params.getWriterVersion());
+
+      int bitWidth = BytesUtils.getWidthFromMaxInt(getMaxLevel(params.getDescriptor(), ValuesType.VALUES));
+      return new RunLengthBitPackingHybridValuesWriter(bitWidth, params.getInitialCapacity(), params.getPageSize(), params.getAllocator());
+    }
+
+    @Override
+    public WriterVersion minimumWriterVersion() {
+      return WriterVersion.PARQUET_2_0;
+    }
   },
 
   /**
@@ -133,6 +187,13 @@ public enum Encoding {
     public ValuesReader getValuesReader(ColumnDescriptor descriptor, ValuesType valuesType) {
       return new ByteBitPackingValuesReader(getMaxLevel(descriptor, valuesType), BIG_ENDIAN);
     }
+
+    @Override
+    public ValuesWriter getValuesWriter(GetValuesWriterParams params) {
+      validateWriterVersion(params.getWriterVersion());
+
+      return new ByteBitPackingValuesWriter(getMaxLevel(params.getDescriptor(), ValuesType.VALUES), BIG_ENDIAN);
+    }
   },
 
   /**
@@ -143,6 +204,15 @@ public enum Encoding {
     @Override
     public ValuesReader getDictionaryBasedValuesReader(ColumnDescriptor descriptor, ValuesType valuesType, Dictionary dictionary) {
       return RLE_DICTIONARY.getDictionaryBasedValuesReader(descriptor, valuesType, dictionary);
+    }
+
+    @Override
+    public ValuesWriter getValuesWriter(GetValuesWriterParams params) {
+      validateWriterVersion(params.getWriterVersion());
+
+      Encoding encodingForDataPage = PLAIN_DICTIONARY;
+      Encoding encodingForDictionaryPage = PLAIN;
+      return getDictionaryBasedValuesWriter(params, encodingForDataPage, encodingForDictionaryPage);
     }
 
     @Override
@@ -169,6 +239,25 @@ public enum Encoding {
       }
       return new DeltaBinaryPackingValuesReader();
     }
+
+    @Override
+    public ValuesWriter getValuesWriter(GetValuesWriterParams params) {
+      validateWriterVersion(params.getWriterVersion());
+
+      switch(params.getDescriptor().getType()) {
+        case INT32:
+          return new DeltaBinaryPackingValuesWriterForInteger(params.getInitialCapacity(), params.getPageSize(), params.getAllocator());
+        case INT64:
+          return new DeltaBinaryPackingValuesWriterForLong(params.getInitialCapacity(), params.getPageSize(), params.getAllocator());
+        default:
+          throw new ParquetEncodingException("Encoding DELTA_BINARY_PACKED is only supported for type INT32 and INT64");
+      }
+    }
+
+    @Override
+    public WriterVersion minimumWriterVersion() {
+      return WriterVersion.PARQUET_2_0;
+    }
   },
 
   /**
@@ -183,6 +272,16 @@ public enum Encoding {
         throw new ParquetDecodingException("Encoding DELTA_LENGTH_BYTE_ARRAY is only supported for type BINARY");
       }
       return new DeltaLengthByteArrayValuesReader();
+    }
+
+    @Override
+    public ValuesWriter getValuesWriter(GetValuesWriterParams params) {
+      validateWriterVersion(params.getWriterVersion());
+
+      if (params.getDescriptor().getType() != BINARY) {
+        throw new ParquetEncodingException("Encoding DELTA_LENGTH_BYTE_ARRAY is only supported for type BINARY");
+      }
+      return new DeltaLengthByteArrayValuesWriter(params.getInitialCapacity(), params.getPageSize(), params.getAllocator());
     }
   },
 
@@ -199,13 +298,27 @@ public enum Encoding {
       }
       return new DeltaByteArrayReader();
     }
+
+    @Override
+    public ValuesWriter getValuesWriter(GetValuesWriterParams params) {
+      validateWriterVersion(params.getWriterVersion());
+
+      if (params.getDescriptor().getType() != BINARY && params.getDescriptor().getType() != FIXED_LEN_BYTE_ARRAY) {
+        throw new ParquetEncodingException("Encoding DELTA_BYTE_ARRAY is only supported for type BINARY and FIXED_LEN_BYTE_ARRAY");
+      }
+      return new DeltaByteArrayWriter(params.getInitialCapacity(), params.getPageSize(), params.getAllocator());
+    }
+
+    @Override
+    public WriterVersion minimumWriterVersion() {
+      return WriterVersion.PARQUET_2_0;
+    }
   },
 
   /**
    * Dictionary encoding: the ids are encoded using the RLE encoding
    */
   RLE_DICTIONARY {
-
     @Override
     public ValuesReader getDictionaryBasedValuesReader(ColumnDescriptor descriptor, ValuesType valuesType, Dictionary dictionary) {
       switch (descriptor.getType()) {
@@ -223,11 +336,67 @@ public enum Encoding {
     }
 
     @Override
+    public ValuesWriter getValuesWriter(GetValuesWriterParams params) {
+      validateWriterVersion(params.getWriterVersion());
+
+      Encoding encodingForDataPage = RLE_DICTIONARY;
+      Encoding encodingForDictionaryPage = PLAIN;
+      return getDictionaryBasedValuesWriter(params, encodingForDataPage, encodingForDictionaryPage);
+    }
+
+    @Override
     public boolean usesDictionary() {
       return true;
     }
 
+    @Override
+    public WriterVersion minimumWriterVersion() {
+      return WriterVersion.PARQUET_2_0;
+    }
   };
+
+  /**
+   * Encapsulates parameters needed to create new ValuesWriter classes as part of the getValuesWriter
+   * call.
+   */
+  public static class GetValuesWriterParams {
+    public GetValuesWriterParams(ColumnDescriptor descriptor,
+                                 WriterVersion writerVersion,
+                                 int bitWidth,
+                                 int initialCapacity,
+                                 int pageSize,
+                                 ByteBufferAllocator allocator,
+                                 int maxDictionaryByteSize) {
+      this.descriptor = descriptor;
+      this.writerVersion = writerVersion;
+      this.bitWidth = bitWidth;
+      this.initialCapacity = initialCapacity;
+      this.pageSize = pageSize;
+      this.allocator = allocator;
+      this.maxDictionaryByteSize = maxDictionaryByteSize;
+    }
+
+    private ColumnDescriptor descriptor;
+    public ColumnDescriptor getDescriptor() { return descriptor; }
+
+    private WriterVersion writerVersion;
+    public WriterVersion getWriterVersion() { return writerVersion; }
+
+    private int bitWidth;
+    public int getBitWidth() { return bitWidth; }
+
+    private int initialCapacity;
+    public int getInitialCapacity() { return initialCapacity; }
+
+    private int pageSize;
+    public int getPageSize() { return pageSize; }
+
+    private ByteBufferAllocator allocator;
+    public ByteBufferAllocator getAllocator() { return allocator; }
+
+    private int maxDictionaryByteSize;
+    public int getMaxDictionaryByteSize() { return maxDictionaryByteSize; }
+  }
 
   int getMaxLevel(ColumnDescriptor descriptor, ValuesType valuesType) {
     int maxLevel;
@@ -247,6 +416,29 @@ public enum Encoding {
       throw new ParquetDecodingException("Unsupported encoding for values: " + this);
     }
     return maxLevel;
+  }
+
+  protected ValuesWriter getDictionaryBasedValuesWriter(GetValuesWriterParams params, Encoding encodingForDataPage, Encoding encodingForDictionaryPage) {
+    switch (params.getDescriptor().getType()) {
+      case BOOLEAN:
+        throw new ParquetEncodingException("no dictionary encoding for BOOLEAN");
+      case BINARY:
+        return new PlainBinaryDictionaryValuesWriter(params.getMaxDictionaryByteSize(), encodingForDataPage, encodingForDictionaryPage, params.getAllocator());
+      case INT32:
+        return new PlainIntegerDictionaryValuesWriter(params.getMaxDictionaryByteSize(), encodingForDataPage, encodingForDictionaryPage, params.getAllocator());
+      case INT64:
+        return new PlainLongDictionaryValuesWriter(params.getMaxDictionaryByteSize(), encodingForDataPage, encodingForDictionaryPage, params.getAllocator());
+      case INT96:
+        return new PlainFixedLenArrayDictionaryValuesWriter(params.getMaxDictionaryByteSize(), params.getBitWidth(), encodingForDataPage, encodingForDictionaryPage, params.getAllocator());
+      case DOUBLE:
+        return new PlainDoubleDictionaryValuesWriter(params.getMaxDictionaryByteSize(), encodingForDataPage, encodingForDictionaryPage, params.getAllocator());
+      case FLOAT:
+        return new PlainFloatDictionaryValuesWriter(params.getMaxDictionaryByteSize(), encodingForDataPage, encodingForDictionaryPage, params.getAllocator());
+      case FIXED_LEN_BYTE_ARRAY:
+        return new PlainFixedLenArrayDictionaryValuesWriter(params.getMaxDictionaryByteSize(), params.getBitWidth(), encodingForDataPage, encodingForDictionaryPage, params.getAllocator());
+      default:
+        throw new IllegalArgumentException("Unknown type " + params.getDescriptor().getType());
+    }
   }
 
   /**
@@ -275,6 +467,37 @@ public enum Encoding {
    */
   public ValuesReader getValuesReader(ColumnDescriptor descriptor, ValuesType valuesType) {
     throw new UnsupportedOperationException("Error decoding " + descriptor + ". " + this.name() + " is dictionary based");
+  }
+
+  /**
+   * To create appropriate values writers for for the given encoding + type.
+   * @param params struct that encapsulates various params that needed to be passed to
+   * create the ValueWriters
+   * @return ValuesWriter for the given encoding + column type.
+   */
+  public ValuesWriter getValuesWriter(GetValuesWriterParams params) {
+    throw new UnsupportedOperationException("Creation of values writer is not supported by: " + this.name());
+  }
+
+  /**
+   * Returns the minimum writer version needed for this encoding.
+   */
+  public WriterVersion minimumWriterVersion() {
+    return WriterVersion.PARQUET_1_0;
+  }
+
+  /**
+   * Verify that the writer version is >= minimumWriterVersion for this encoding
+   * @param version to test against
+   */
+  protected void validateWriterVersion(WriterVersion version) {
+    // if writerVersion is 2.0, it will work with 1.0 encodings fine.
+    // just need to check if we're trying to use a 2.0 encoding when version is 1.0
+    if (version == WriterVersion.PARQUET_1_0 && version != minimumWriterVersion() ) {
+      throw new ParquetEncodingException(
+        "Unable to use encoding: " + this.name() +
+        " with version: " + version + " it requires: " + minimumWriterVersion());
+    }
   }
 
   /**
