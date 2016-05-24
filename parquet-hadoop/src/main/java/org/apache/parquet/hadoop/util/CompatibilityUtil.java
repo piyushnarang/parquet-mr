@@ -66,17 +66,7 @@ public class CompatibilityUtil {
     }
   }
 
-  private static Object invoke(Method method, String errorMsg, Object instance, Object... args) {
-    try {
-      return method.invoke(instance, args);
-    } catch (IllegalAccessException e) {
-      throw new IllegalArgumentException(errorMsg, e);
-    } catch (InvocationTargetException e) {
-      throw new IllegalArgumentException(errorMsg, e);
-    }
-  }
-
-  public static int getBuf(FSDataInputStream f, ByteBuffer readBuf, int maxSize) throws IOException {
+  public static int getBuf(FSDataInputStream f, ByteBuffer readBuf) throws IOException {
     int res;
     if (useV21) {
       try {
@@ -88,7 +78,7 @@ public class CompatibilityUtil {
           // be a reasonable check to make to see if the interface is
           // present but not implemented and we should be falling back
           useV21 = false;
-          return getBuf(f, readBuf, maxSize);
+          return getBuf(f, readBuf);
         } else if (e.getCause() instanceof IOException) {
           throw (IOException) e.getCause();
         } else {
@@ -105,9 +95,15 @@ public class CompatibilityUtil {
         throw new ShouldNeverHappenException(e);
       }
     } else {
-      byte[] buf = new byte[maxSize];
-      res = f.read(buf);
-      readBuf.put(buf, 0, res);
+      if (readBuf.hasArray()) {
+        int initPos = readBuf.position();
+        res = f.read(readBuf.array(), readBuf.arrayOffset(), readBuf.remaining());
+        readBuf.position(initPos + res);
+      } else {
+        byte[] buf = new byte[readBuf.remaining()];
+        res = f.read(buf);
+        readBuf.put(buf, 0, res);
+      }
     }
     return res;
   }
