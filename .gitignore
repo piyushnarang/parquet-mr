@@ -12,6 +12,7 @@ target
 *.iws
 *.orig
 *.rej
+*.versionsBackup
 dependency-reduced-pom.xml
 parquet-scrooge/.cache
 .idea/*
