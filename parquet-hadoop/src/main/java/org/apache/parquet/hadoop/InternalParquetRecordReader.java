@@ -105,36 +105,52 @@ class InternalParquetRecordReader<T> {
 
   private void checkRead() throws IOException {
     if (current == totalCountLoadedSoFar) {
-      if (current != 0) {
-        totalTimeSpentProcessingRecords += (System.currentTimeMillis() - startedAssemblingCurrentBlockAt);
-        if (Log.INFO) {
-            LOG.info("Assembled and processed " + totalCountLoadedSoFar + " records from " + columnCount + " columns in " + totalTimeSpentProcessingRecords + " ms: "+((float)totalCountLoadedSoFar / totalTimeSpentProcessingRecords) + " rec/ms, " + ((float)totalCountLoadedSoFar * columnCount / totalTimeSpentProcessingRecords) + " cell/ms");
-            final long totalTime = totalTimeSpentProcessingRecords + totalTimeSpentReadingBytes;
-            if (totalTime != 0) {
-                final long percentReading = 100 * totalTimeSpentReadingBytes / totalTime;
-                final long percentProcessing = 100 * totalTimeSpentProcessingRecords / totalTime;
-                LOG.info("time spent so far " + percentReading + "% reading ("+totalTimeSpentReadingBytes+" ms) and " + percentProcessing + "% processing ("+totalTimeSpentProcessingRecords+" ms)");
-            }
-        }
-      }
+      calculateTimeSpentSoFar();
 
-      LOG.info("at row " + current + ". reading next block");
-      long t0 = System.currentTimeMillis();
-      PageReadStore pages = reader.readNextRowGroup();
-      if (pages == null) {
-        throw new IOException("expecting more rows but reached last block. Read " + current + " out of " + total);
-      }
-      long timeSpentReading = System.currentTimeMillis() - t0;
-      totalTimeSpentReadingBytes += timeSpentReading;
-      BenchmarkCounter.incrementTime(timeSpentReading);
-      if (Log.INFO) LOG.info("block read in memory in " + timeSpentReading + " ms. row count = " + pages.getRowCount());
-      if (Log.DEBUG) LOG.debug("initializing Record assembly with requested schema " + requestedSchema);
-      MessageColumnIO columnIO = columnIOFactory.getColumnIO(requestedSchema, fileSchema, strictTypeChecking);
-      recordReader = columnIO.getRecordReader(pages, recordConverter, filter);
+      PageReadStore pages = readNextPageGroup();
+
+      getRecordReader(pages);
+
       startedAssemblingCurrentBlockAt = System.currentTimeMillis();
       totalCountLoadedSoFar += pages.getRowCount();
       ++ currentBlock;
     }
+  }
+
+  private void getRecordReader(PageReadStore pages) {
+    MessageColumnIO columnIO = columnIOFactory.getColumnIO(requestedSchema, fileSchema, strictTypeChecking);
+    recordReader = columnIO.getRecordReader(pages, recordConverter, filter);
+  }
+
+  private void calculateTimeSpentSoFar() {
+    if (current != 0) {
+      totalTimeSpentProcessingRecords += (System.currentTimeMillis() - startedAssemblingCurrentBlockAt);
+      if (Log.INFO) {
+          LOG.info("Assembled and processed " + totalCountLoadedSoFar + " records from " + columnCount + " columns in " + totalTimeSpentProcessingRecords + " ms: "+((float)totalCountLoadedSoFar / totalTimeSpentProcessingRecords) + " rec/ms, " + ((float)totalCountLoadedSoFar * columnCount / totalTimeSpentProcessingRecords) + " cell/ms");
+          final long totalTime = totalTimeSpentProcessingRecords + totalTimeSpentReadingBytes;
+          if (totalTime != 0) {
+              final long percentReading = 100 * totalTimeSpentReadingBytes / totalTime;
+              final long percentProcessing = 100 * totalTimeSpentProcessingRecords / totalTime;
+              LOG.info("time spent so far " + percentReading + "% reading ("+totalTimeSpentReadingBytes+" ms) and " + percentProcessing + "% processing ("+totalTimeSpentProcessingRecords+" ms)");
+          }
+      }
+    }
+  }
+
+  private PageReadStore readNextPageGroup() throws IOException {
+    LOG.info("at row " + current + ". reading next block");
+    long t0 = System.currentTimeMillis();
+    PageReadStore pages = reader.readNextRowGroup();
+    if (pages == null) {
+      throw new IOException("expecting more rows but reached last block. Read " + current + " out of " + total);
+    }
+    long timeSpentReading = System.currentTimeMillis() - t0;
+    totalTimeSpentReadingBytes += timeSpentReading;
+    BenchmarkCounter.incrementTime(timeSpentReading);
+    if (Log.INFO) LOG.info("block read in memory in " + timeSpentReading + " ms. row count = " + pages.getRowCount());
+    if (Log.DEBUG) LOG.debug("initializing Record assembly with requested schema " + requestedSchema);
+
+    return pages;
   }
 
   public void close() throws IOException {

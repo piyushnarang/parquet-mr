@@ -85,27 +85,37 @@ public class RunLengthBitPackingHybridDecoder {
     final int header = BytesUtils.readUnsignedVarInt(in);
     mode = (header & 1) == 0 ? MODE.RLE : MODE.PACKED;
     switch (mode) {
-    case RLE:
-      currentCount = header >>> 1;
-      if (DEBUG) LOG.debug("reading " + currentCount + " values RLE");
-      currentValue = BytesUtils.readIntLittleEndianPaddedOnBitWidth(in, bitWidth);
-      break;
-    case PACKED:
-      int numGroups = header >>> 1;
-      currentCount = numGroups * 8;
-      if (DEBUG) LOG.debug("reading " + currentCount + " values BIT PACKED");
-      currentBuffer = new int[currentCount]; // TODO: reuse a buffer
-      byte[] bytes = new byte[numGroups * bitWidth];
-      // At the end of the file RLE data though, there might not be that many bytes left.
-      int bytesToRead = (int)Math.ceil(currentCount * bitWidth / 8.0);
-      bytesToRead = Math.min(bytesToRead, in.available());
-      new DataInputStream(in).readFully(bytes, 0, bytesToRead);
-      for (int valueIndex = 0, byteIndex = 0; valueIndex < currentCount; valueIndex += 8, byteIndex += bitWidth) {
-        packer.unpack8Values(bytes, byteIndex, currentBuffer, valueIndex);
-      }
-      break;
-    default:
-      throw new ParquetDecodingException("not a valid mode " + mode);
+      case RLE:
+        readRLE(header);
+        break;
+      case PACKED:
+        readPacked(header);
+        break;
+      default:
+        throw new ParquetDecodingException("not a valid mode " + mode);
     }
+  }
+
+  private void readPacked(int header) throws IOException {
+    int numGroups = header >>> 1;
+    currentCount = numGroups * 8;
+    if (DEBUG) LOG.debug("reading " + currentCount + " values BIT PACKED");
+    currentBuffer = new int[currentCount]; // TODO: reuse a buffer
+    byte[] bytes = new byte[numGroups * bitWidth];
+    // At the end of the file RLE data though, there might not be that many bytes left.
+    int bytesToRead = (int)Math.ceil(currentCount * bitWidth / 8.0);
+    bytesToRead = Math.min(bytesToRead, in.available());
+
+    new DataInputStream(in).readFully(bytes, 0, bytesToRead);
+
+    for (int valueIndex = 0, byteIndex = 0; valueIndex < currentCount; valueIndex += 8, byteIndex += bitWidth) {
+      packer.unpack8Values(bytes, byteIndex, currentBuffer, valueIndex);
+    }
+  }
+
+  private void readRLE(int header) throws IOException {
+    currentCount = header >>> 1;
+    if (DEBUG) LOG.debug("reading " + currentCount + " values RLE");
+    currentValue = BytesUtils.readIntLittleEndianPaddedOnBitWidth(in, bitWidth);
   }
 }
