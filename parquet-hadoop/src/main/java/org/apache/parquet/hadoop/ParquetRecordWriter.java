@@ -145,9 +145,9 @@ public class ParquetRecordWriter<T> extends RecordWriter<Void, T> {
       ParquetProperties props,
       MemoryManager memoryManager,
       Configuration conf) {
-    this.codecFactory = new CodecFactory(conf, props.getPageSizeThreshold());
+    this.codecFactory = new CodecFactory(conf);
     internalWriter = new InternalParquetRecordWriter<T>(w, writeSupport, schema,
-        extraMetaData, blockSize, codecFactory.getCompressor(codec), validating,
+        extraMetaData, blockSize, codecFactory.getCompressor(codec, props.getPageSizeThreshold()), validating,
         props);
     this.memoryManager = checkNotNull(memoryManager, "memoryManager");
     memoryManager.addWriter(internalWriter, blockSize);
