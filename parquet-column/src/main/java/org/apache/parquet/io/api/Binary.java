@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.io.ObjectStreamException;
 import java.io.OutputStream;
 import java.io.Serializable;
-import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -506,13 +505,20 @@ abstract public class Binary implements Comparable<Binary>, Serializable {
     @Override
     public void writeTo(DataOutput out) throws IOException {
       // TODO: should not have to materialize those bytes
-      out.write(getBytesUnsafe());
+      if (value.hasArray()) {
+        out.write(value.array(), value.arrayOffset() + offset, length);
+      } else {
+        out.write(getBytesUnsafe());
+      }
     }
 
     private void writeObject(java.io.ObjectOutputStream out) throws IOException {
-      byte[] bytes = getBytesUnsafe();
-      out.writeInt(bytes.length);
-      out.write(bytes);
+      out.writeInt(length);
+      if (value.hasArray()) {
+        out.write(value.array(), value.arrayOffset() + offset, length);
+      } else {
+        out.write(getBytesUnsafe());
+      }
     }
 
     private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
@@ -645,11 +651,9 @@ abstract public class Binary implements Comparable<Binary>, Serializable {
     if (array1 == null && buf == null) return 0;
     int min_length = (length1 < length2) ? length1 : length2;
     for (int i = 0; i < min_length; i++) {
-      if (array1[i + offset1] < buf.get(i + offset2)) {
-        return 1;
-      }
-      if (array1[i + offset1] > buf.get(i + offset2)) {
-        return -1;
+      int cmp = Byte.compare(buf.get(i + offset2), array1[i + offset1]);
+      if (cmp != 0) {
+        return cmp;
       }
     }
     // check remainder
@@ -663,11 +667,9 @@ abstract public class Binary implements Comparable<Binary>, Serializable {
     if (buf1 == null && buf2 == null) return 0;
     int min_length = (length1 < length2) ? length1 : length2;
     for (int i = 0; i < min_length; i++) {
-      if (buf1.get(i + offset1) < buf2.get(i + offset2)) {
-        return 1;
-      }
-      if (buf1.get(i + offset1) > buf2.get(i + offset2)) {
-        return -1;
+      int cmp = Byte.compare(buf2.get(i + offset2), buf1.get(i + offset1));
+      if (cmp != 0) {
+        return cmp;
       }
     }
     // check remainder
@@ -682,11 +684,9 @@ abstract public class Binary implements Comparable<Binary>, Serializable {
     if (array1 == array2 && offset1 == offset2 && length1 == length2) return 0;
     int min_length = (length1 < length2) ? length1 : length2;
     for (int i = 0; i < min_length; i++) {
-      if (array1[i + offset1] < array2[i + offset2]) {
-        return 1;
-      }
-      if (array1[i + offset1] > array2[i + offset2]) {
-        return -1;
+      int cmp = Byte.compare(array2[i + offset2], array1[i + offset1]);
+      if (cmp != 0) {
+        return cmp;
       }
     }
     // check remainder
