@@ -23,8 +23,6 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.apache.avro.Conversion;
-import org.apache.avro.LogicalType;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericFixed;
@@ -71,8 +69,6 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
   private RecordConsumer recordConsumer;
   private MessageType rootSchema;
   private Schema rootAvroSchema;
-  private LogicalType rootLogicalType;
-  private Conversion<?> rootConversion;
   private GenericData model;
   private ListWriter listWriter;
 
@@ -86,7 +82,6 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
   public AvroWriteSupport(MessageType schema, Schema avroSchema) {
     this.rootSchema = schema;
     this.rootAvroSchema = avroSchema;
-    this.rootLogicalType = rootAvroSchema.getLogicalType();
     this.model = null;
   }
 
@@ -94,7 +89,6 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
                           GenericData model) {
     this.rootSchema = schema;
     this.rootAvroSchema = avroSchema;
-    this.rootLogicalType = rootAvroSchema.getLogicalType();
     this.model = model;
   }
 
@@ -142,25 +136,16 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
   // overloaded version for backward compatibility
   @SuppressWarnings("unchecked")
   public void write(IndexedRecord record) {
-    write((T) record);
+    recordConsumer.startMessage();
+    writeRecordFields(rootSchema, rootAvroSchema, record);
+    recordConsumer.endMessage();
   }
 
   @Override
   public void write(T record) {
-    if (rootLogicalType != null) {
-      Conversion<?> conversion = model.getConversionByClass(
-          record.getClass(), rootLogicalType);
-
-      recordConsumer.startMessage();
-      writeRecordFields(rootSchema, rootAvroSchema,
-          convert(rootAvroSchema, rootLogicalType, conversion, record));
-      recordConsumer.endMessage();
-
-    } else {
-      recordConsumer.startMessage();
-      writeRecordFields(rootSchema, rootAvroSchema, record);
-      recordConsumer.endMessage();
-    }
+    recordConsumer.startMessage();
+    writeRecordFields(rootSchema, rootAvroSchema, record);
+    recordConsumer.endMessage();
   }
 
   private void writeRecord(GroupType schema, Schema avroSchema,
@@ -241,8 +226,6 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
       }
     }
 
-    // TODO: what if the value is null?
-
     // Sparsely populated method of encoding unions, each member has its own
     // set of columns.
     String memberName = "member" + parquetIndex;
@@ -254,108 +237,44 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
     recordConsumer.endGroup();
   }
 
-  /**
-   * Calls an appropriate write method based on the value.
-   * Value MUST not be null.
-   *
-   * @param type the Parquet type
-   * @param avroSchema the Avro schema
-   * @param value a non-null value to write
-   */
+  @SuppressWarnings("unchecked")
   private void writeValue(Type type, Schema avroSchema, Object value) {
     Schema nonNullAvroSchema = AvroSchemaConverter.getNonNull(avroSchema);
-    LogicalType logicalType = nonNullAvroSchema.getLogicalType();
-    if (logicalType != null) {
-      Conversion<?> conversion = model.getConversionByClass(
-          value.getClass(), logicalType);
-      writeValueWithoutConversion(type, nonNullAvroSchema,
-          convert(nonNullAvroSchema, logicalType, conversion, value));
-    } else {
-      writeValueWithoutConversion(type, nonNullAvroSchema, value);
-    }
-  }
-
-  private <D> Object convert(Schema schema, LogicalType logicalType,
-                             Conversion<D> conversion, Object datum) {
-    if (conversion == null) {
-      return datum;
-    }
-    Class<D> fromClass = conversion.getConvertedType();
-    switch (schema.getType()) {
-      case RECORD:  return conversion.toRecord(fromClass.cast(datum), schema, logicalType);
-      case ENUM:    return conversion.toEnumSymbol(fromClass.cast(datum), schema, logicalType);
-      case ARRAY:   return conversion.toArray(fromClass.cast(datum), schema, logicalType);
-      case MAP:     return conversion.toMap(fromClass.cast(datum), schema, logicalType);
-      case FIXED:   return conversion.toFixed(fromClass.cast(datum), schema, logicalType);
-      case STRING:  return conversion.toCharSequence(fromClass.cast(datum), schema, logicalType);
-      case BYTES:   return conversion.toBytes(fromClass.cast(datum), schema, logicalType);
-      case INT:     return conversion.toInt(fromClass.cast(datum), schema, logicalType);
-      case LONG:    return conversion.toLong(fromClass.cast(datum), schema, logicalType);
-      case FLOAT:   return conversion.toFloat(fromClass.cast(datum), schema, logicalType);
-      case DOUBLE:  return conversion.toDouble(fromClass.cast(datum), schema, logicalType);
-      case BOOLEAN: return conversion.toBoolean(fromClass.cast(datum), schema, logicalType);
-    }
-    return datum;
-  }
-
-  /**
-   * Calls an appropriate write method based on the value.
-   * Value must not be null and the schema must not be nullable.
-   *
-   * @param type a Parquet type
-   * @param avroSchema a non-nullable Avro schema
-   * @param value a non-null value to write
-   */
-  @SuppressWarnings("unchecked")
-  private void writeValueWithoutConversion(Type type, Schema avroSchema, Object value) {
-    switch (avroSchema.getType()) {
-      case BOOLEAN:
-        recordConsumer.addBoolean((Boolean) value);
-        break;
-      case INT:
-        if (value instanceof Character) {
-          recordConsumer.addInteger((Character) value);
-        } else {
-          recordConsumer.addInteger(((Number) value).intValue());
-        }
-        break;
-      case LONG:
-        recordConsumer.addLong(((Number) value).longValue());
-        break;
-      case FLOAT:
-        recordConsumer.addFloat(((Number) value).floatValue());
-        break;
-      case DOUBLE:
-        recordConsumer.addDouble(((Number) value).doubleValue());
-        break;
-      case FIXED:
-        recordConsumer.addBinary(Binary.fromReusedByteArray(((GenericFixed) value).bytes()));
-        break;
-      case BYTES:
-        if (value instanceof byte[]) {
-          recordConsumer.addBinary(Binary.fromReusedByteArray((byte[]) value));
-        } else {
-          recordConsumer.addBinary(Binary.fromReusedByteBuffer((ByteBuffer) value));
-        }
-        break;
-      case STRING:
-        recordConsumer.addBinary(fromAvroString(value));
-        break;
-      case RECORD:
-        writeRecord(type.asGroupType(), avroSchema, value);
-        break;
-      case ENUM:
-        recordConsumer.addBinary(Binary.fromString(value.toString()));
-        break;
-      case ARRAY:
-        listWriter.writeList(type.asGroupType(), avroSchema, value);
-        break;
-      case MAP:
-        writeMap(type.asGroupType(), avroSchema, (Map<CharSequence, ?>) value);
-        break;
-      case UNION:
-        writeUnion(type.asGroupType(), avroSchema, value);
-        break;
+    Schema.Type avroType = nonNullAvroSchema.getType();
+    if (avroType.equals(Schema.Type.BOOLEAN)) {
+      recordConsumer.addBoolean((Boolean) value);
+    } else if (avroType.equals(Schema.Type.INT)) {
+      if (value instanceof Character) {
+        recordConsumer.addInteger((Character) value);
+      } else {
+        recordConsumer.addInteger(((Number) value).intValue());
+      }
+    } else if (avroType.equals(Schema.Type.LONG)) {
+      recordConsumer.addLong(((Number) value).longValue());
+    } else if (avroType.equals(Schema.Type.FLOAT)) {
+      recordConsumer.addFloat(((Number) value).floatValue());
+    } else if (avroType.equals(Schema.Type.DOUBLE)) {
+      recordConsumer.addDouble(((Number) value).doubleValue());
+    } else if (avroType.equals(Schema.Type.BYTES)) {
+      if (value instanceof byte[]) {
+        recordConsumer.addBinary(Binary.fromReusedByteArray((byte[]) value));
+      } else {
+        recordConsumer.addBinary(Binary.fromReusedByteBuffer((ByteBuffer) value));
+      }
+    } else if (avroType.equals(Schema.Type.STRING)) {
+      recordConsumer.addBinary(fromAvroString(value));
+    } else if (avroType.equals(Schema.Type.RECORD)) {
+      writeRecord(type.asGroupType(), nonNullAvroSchema, value);
+    } else if (avroType.equals(Schema.Type.ENUM)) {
+      recordConsumer.addBinary(Binary.fromString(value.toString()));
+    } else if (avroType.equals(Schema.Type.ARRAY)) {
+      listWriter.writeList(type.asGroupType(), nonNullAvroSchema, value);
+    } else if (avroType.equals(Schema.Type.MAP)) {
+      writeMap(type.asGroupType(), nonNullAvroSchema, (Map<CharSequence, ?>) value);
+    } else if (avroType.equals(Schema.Type.UNION)) {
+      writeUnion(type.asGroupType(), nonNullAvroSchema, value);
+    } else if (avroType.equals(Schema.Type.FIXED)) {
+      recordConsumer.addBinary(Binary.fromReusedByteArray(((GenericFixed) value).bytes()));
     }
   }
 
@@ -364,7 +283,7 @@ public class AvroWriteSupport<T> extends WriteSupport<T> {
       Utf8 utf8 = (Utf8) value;
       return Binary.fromReusedByteArray(utf8.getBytes(), 0, utf8.getByteLength());
     }
-    return Binary.fromString((CharSequence) value);
+    return Binary.fromString(value.toString());
   }
 
   private static GenericData getDataModel(Configuration conf) {
